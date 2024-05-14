@@ -1,4 +1,7 @@
 <?php
+
+use Swoole\Coroutine;
+
 /**
  * MysqliDb Class
  *
@@ -15,20 +18,19 @@
 
 class MysqliDb
 {
-
     /**
-     * Static instance of self
+     * transaction context
      *
-     * @var MysqliDb
+     * @var array
      */
-    protected static $_instance;
+    protected $transactionContext = array();
 
     /**
      * Table prefix
      *
      * @var string
      */
-    public static $prefix = '';
+    public $prefix = '';
 
     /**
      * MySQLi instances
@@ -290,8 +292,6 @@ class MysqliDb
         if (isset($prefix)) {
             $this->setPrefix($prefix);
         }
-
-        self::$_instance = $this;
     }
 
     /**
@@ -329,7 +329,9 @@ class MysqliDb
         if (!empty($charset)) {
             $mysqli->set_charset($charset);
         }
-        $this->_mysqli[$connectionName] = $mysqli;
+
+        $cid = Coroutine::getCid();
+        $this->_mysqli[$cid][$connectionName] = $mysqli;
     }
 
     /**
@@ -411,24 +413,15 @@ class MysqliDb
      */
     public function mysqli()
     {
-        if (!isset($this->_mysqli[$this->defConnectionName])) {
+        $cid = Coroutine::getCid();
+        if (!isset($this->_mysqli[$cid][$this->defConnectionName])) {
             $this->connect($this->defConnectionName);
+            Coroutine::defer(function () use ($cid) {
+                unset($this->_mysqli[$cid][$this->defConnectionName]);
+            });
         }
-        return $this->_mysqli[$this->defConnectionName];
-    }
 
-    /**
-     * A method of returning the static instance to allow access to the
-     * instantiated object from within another class.
-     * Inheriting this class would require reloading connection info.
-     *
-     * @uses $db = MySqliDb::getInstance();
-     *
-     * @return MysqliDb Returns the current instance.
-     */
-    public static function getInstance()
-    {
-        return self::$_instance;
+        return $this->_mysqli[$cid][$this->defConnectionName];
     }
 
     /**
@@ -509,7 +502,7 @@ class MysqliDb
      */
     public function setPrefix($prefix = '')
     {
-        self::$prefix = $prefix;
+        $this->prefix = $prefix;
         return $this;
     }
 
@@ -556,7 +549,7 @@ class MysqliDb
         preg_match_all("/(from|into|update|join|describe) [\\'\\´]?([a-zA-Z0-9_-]+)[\\'\\´]?/i", $query, $matches);
         list($from_table, $from, $table) = $matches;
 
-        return str_replace($table[0], self::$prefix.$table[0], $query);
+        return str_replace($table[0], $this->prefix.$table[0], $query);
     }
 
     /**
@@ -741,7 +734,7 @@ class MysqliDb
         $column = is_array($columns) ? implode(', ', $columns) : $columns;
 
         if (strpos($tableName, '.') === false) {
-            $this->_tableName = self::$prefix . $tableName;
+            $this->_tableName = $this->prefix . $tableName;
         } else {
             $this->_tableName = $tableName;
         }
@@ -921,7 +914,7 @@ class MysqliDb
             return;
         }
 
-        $this->_query = "UPDATE " . self::$prefix . $tableName;
+        $this->_query = "UPDATE " . $this->prefix . $tableName;
 
         $stmt = $this->_buildQuery($numRows, $tableData);
         $status = $stmt->execute();
@@ -949,7 +942,7 @@ class MysqliDb
             return;
         }
 
-        $table = self::$prefix . $tableName;
+        $table = $this->prefix . $tableName;
 
         if (count($this->_join)) {
             $this->_query = "DELETE " . preg_replace('/.* (.*)/', '$1', $table) . " FROM " . $table;
@@ -1089,7 +1082,7 @@ class MysqliDb
         }
 
         if (!is_object($joinTable)) {
-            $joinTable = self::$prefix . $joinTable;
+            $joinTable = $this->prefix . $joinTable;
         }
 
         $this->_join[] = Array($joinType, $joinTable, $joinCondition);
@@ -1130,7 +1123,7 @@ class MysqliDb
 		}
 
 		// Add the prefix to the import table
-		$table = self::$prefix . $importTable;
+		$table = $this->prefix . $importTable;
 
 		// Add 1 more slash to every slash so maria will interpret it as a path
 		$importFile = str_replace("\\", "\\\\", $importFile);
@@ -1196,7 +1189,7 @@ class MysqliDb
 		}
 
 		// Add the prefix to the import table
-		$table = self::$prefix . $importTable;
+		$table = $this->prefix . $importTable;
 
 		// Add 1 more slash to every slash so maria will interpret it as a path
 		$importFile = str_replace("\\", "\\\\", $importFile);
@@ -1242,7 +1235,7 @@ class MysqliDb
         // Add table prefix to orderByField if needed.
         //FIXME: We are adding prefix only if table is enclosed into `` to distinguish aliases
         // from table names
-        $orderByField = preg_replace('/(\`)([`a-zA-Z0-9_]*\.)/', '\1' . self::$prefix . '\2', $orderByField);
+        $orderByField = preg_replace('/(\`)([`a-zA-Z0-9_]*\.)/', '\1' . $this->prefix . '\2', $orderByField);
 
 
         if (empty($orderbyDirection) || !in_array($orderbyDirection, $allowedDirection)) {
@@ -1332,13 +1325,13 @@ class MysqliDb
 					if($key > 0) {
 						$this->_query .= ",";
 					}
-					$this->_query .= " ".self::$prefix.$value." ".$this->_tableLockMethod;
+					$this->_query .= " ".$this->prefix.$value." ".$this->_tableLockMethod;
 				}
 			}
 		}
 		else{
 			// Build the table prefix
-			$table = self::$prefix . $table;
+			$table = $this->prefix . $table;
 
 			// Build the query
 			$this->_query = "LOCK TABLES ".$table." ".$this->_tableLockMethod;
@@ -1536,7 +1529,7 @@ class MysqliDb
             return;
         }
 
-        $this->_query = $operation . " " . implode(' ', $this->_queryOptions) . " INTO " . self::$prefix . $tableName;
+        $this->_query = $operation . " " . implode(' ', $this->_queryOptions) . " INTO " . $this->prefix . $tableName;
         $stmt = $this->_buildQuery(null, $insertData);
         $status = $stmt->execute();
         $this->_stmtError = $stmt->error;
@@ -1641,7 +1634,7 @@ class MysqliDb
             }
 
             if ($this->_nestJoin && $field->table != $this->_tableName) {
-                $field->table = substr($field->table, strlen(self::$prefix));
+                $field->table = substr($field->table, strlen($this->prefix));
                 $row[$field->table][$field->name] = null;
                 $parameters[] = & $row[$field->table][$field->name];
             } else {
@@ -2272,6 +2265,15 @@ class MysqliDb
     public function startTransaction()
     {
         $this->mysqli()->autocommit(false);
+
+        $cid = Coroutine::getCid();
+        // 检查上下文
+        if (isset($this->transactionContext[$cid])) {
+            return;
+        } else {
+            $this->transactionContext[$cid] = true;
+        }
+
         $this->_transaction_in_progress = true;
         register_shutdown_function(array($this, "_transaction_status_check"));
     }
@@ -2288,6 +2290,10 @@ class MysqliDb
         $result = $this->mysqli()->commit();
         $this->_transaction_in_progress = false;
         $this->mysqli()->autocommit(true);
+
+        $cid = Coroutine::getCid();
+        unset($this->transactionContext[$cid]);
+
         return $result;
     }
 
@@ -2303,6 +2309,10 @@ class MysqliDb
         $result = $this->mysqli()->rollback();
         $this->_transaction_in_progress = false;
         $this->mysqli()->autocommit(true);
+
+        $cid = Coroutine::getCid();
+        unset($this->transactionContext[$cid]);
+
         return $result;
     }
 
@@ -2370,7 +2380,7 @@ class MysqliDb
         }
 
         foreach ($tables as $i => $value)
-            $tables[$i] = self::$prefix . $value;
+            $tables[$i] = $this->prefix . $value;
         $db = isset($this->connectionsSettings[$this->defConnectionName]) ? $this->connectionsSettings[$this->defConnectionName]['db'] : null;
         $this->where('table_schema', $db);
         $this->where('table_name', $tables, 'in');
@@ -2428,7 +2438,7 @@ class MysqliDb
      */
     public function joinWhere($whereJoin, $whereProp, $whereValue = 'DBNULL', $operator = '=', $cond = 'AND')
     {
-        $this->_joinAnd[self::$prefix . $whereJoin][] = Array ($cond, $whereProp, $operator, $whereValue);
+        $this->_joinAnd[$this->prefix . $whereJoin][] = Array ($cond, $whereProp, $operator, $whereValue);
         return $this;
     }
 
